@@ -1,0 +1,16 @@
+{
+  "name": "QR Studio — Gerador de QR Code",
+  "short_name": "QR Studio",
+  "description": "Gerador de QR Code minimalista com 16 tipos específicos, modo simples e modo completo.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f6f6f3",
+  "theme_color": "#18181b",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
