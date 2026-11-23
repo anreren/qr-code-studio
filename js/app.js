@@ -7,6 +7,13 @@
 import { UI_ICONS, LOGO_PRESETS, buildPresetLogoDataUri } from './icons.js';
 import { QR_CATEGORIES, QR_TYPES, getQrType } from './payload-builders.js';
 import {
+  buildShareUrl,
+  decodePresetCode,
+  encodePresetCode,
+  extractPresetToken,
+  sanitizeStyle,
+} from './preset-codec.js';
+import {
   DEFAULT_STYLE,
   DOT_STYLES,
   EYE_INNER_STYLES,
@@ -22,6 +29,8 @@ const STORAGE_KEYS = {
   theme: 'qrstudio_theme_v1',
   mode: 'qrstudio_mode_v1',
   history: 'qrstudio_history_v1',
+  workspace: 'qrstudio_workspace_v1',
+  presets: 'qrstudio_presets_v1',
 };
 
 const QUICK_FG_SWATCHES = ['#111111', '#1E3A8A', '#065F46', '#7C2D12', '#3F3F46', '#0369A1'];
@@ -108,6 +117,15 @@ const state = {
   style: { ...DEFAULT_STYLE },
   lastRender: { svg: '', matrix: null, width: 1000, height: 1000, payload: '' },
   history: loadJsonStorage(STORAGE_KEYS.history, []),
+  savedPresets: loadJsonStorage(STORAGE_KEYS.presets, []),
+  presetModal: {
+    tab: 'share', // 'share' | 'import'
+    name: '',
+    includeContent: false,
+    sourceStyle: null, // optional override when sharing a saved preset card
+    importText: '',
+  },
+  saveTimer: null,
   toastTimer: null,
 };
 
@@ -131,6 +149,16 @@ const dom = {
   historyList: document.getElementById('history-list'),
   clearHistoryBtn: document.getElementById('clear-history-btn'),
   closeIcon: document.getElementById('close-icon'),
+
+  presetModalBackdrop: document.getElementById('preset-modal-backdrop'),
+  presetModalCloseBtn: document.getElementById('preset-modal-close-btn'),
+  presetCloseIcon: document.getElementById('preset-close-icon'),
+  presetTabShare: document.getElementById('preset-tab-share'),
+  presetTabImport: document.getElementById('preset-tab-import'),
+  presetModalBody: document.getElementById('preset-modal-body'),
+  sharePresetBtn: document.getElementById('share-preset-btn'),
+  shareIcon: document.getElementById('share-icon'),
+  autosaveStatus: document.getElementById('autosave-status'),
 
   categoryBar: document.getElementById('category-bar'),
   typeSelector: document.getElementById('type-selector'),
@@ -214,7 +242,401 @@ function showToast(message) {
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => {
     dom.toast.classList.remove('is-visible');
-  }, 2400);
+  }, 2600);
+}
+
+/* ============================================================================
+   Local Storage Workspace Persistence & Custom Saved Presets
+   ============================================================================ */
+function restoreWorkspaceFromStorage() {
+  const saved = loadJsonStorage(STORAGE_KEYS.workspace, null);
+  if (!saved || typeof saved !== 'object') return false;
+
+  if (saved.activeType && QR_TYPES.some((t) => t.id === saved.activeType)) {
+    state.activeType = saved.activeType;
+  }
+  if (saved.activeCategory && QR_CATEGORIES.some((c) => c.id === saved.activeCategory)) {
+    state.activeCategory = saved.activeCategory;
+  }
+  if (
+    saved.activeStudioTab &&
+    ['pattern', 'colors', 'logo', 'frame', 'technical'].includes(saved.activeStudioTab)
+  ) {
+    state.activeStudioTab = saved.activeStudioTab;
+  }
+  if (saved.formValues && typeof saved.formValues === 'object') {
+    QR_TYPES.forEach((t) => {
+      if (saved.formValues[t.id] && typeof saved.formValues[t.id] === 'object') {
+        state.formValues[t.id] = { ...t.defaults, ...saved.formValues[t.id] };
+      }
+    });
+  }
+  if (saved.style && typeof saved.style === 'object') {
+    state.style = sanitizeStyle(saved.style);
+  }
+  return true;
+}
+
+function persistWorkspaceNow() {
+  const safeStyle = { ...state.style };
+  // Guard localStorage quota if user uploaded a huge raw binary image (>180 KB)
+  if (safeStyle.logoDataUrl && !safeStyle.logoPresetId && safeStyle.logoDataUrl.length > 180000) {
+    safeStyle.logoDataUrl = '';
+  }
+
+  const snapshot = {
+    v: 1,
+    activeType: state.activeType,
+    activeCategory: state.activeCategory,
+    activeStudioTab: state.activeStudioTab,
+    formValues: state.formValues,
+    style: safeStyle,
+    updatedAt: Date.now(),
+  };
+
+  try {
+    localStorage.setItem(STORAGE_KEYS.workspace, JSON.stringify(snapshot));
+    if (dom.autosaveStatus) {
+      const hhmm = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      dom.autosaveStatus.textContent = `Salvo automaticamente às ${hhmm} · 100% local no navegador.`;
+    }
+  } catch {
+    // Retry without custom uploaded logo if quota exceeded
+    snapshot.style.logoDataUrl = '';
+    try {
+      localStorage.setItem(STORAGE_KEYS.workspace, JSON.stringify(snapshot));
+    } catch {
+      // Ignore if storage is disabled
+    }
+  }
+}
+
+function scheduleWorkspaceSave() {
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(persistWorkspaceNow, 260);
+}
+
+function clearSavedWorkspace() {
+  try {
+    localStorage.removeItem(STORAGE_KEYS.workspace);
+  } catch {
+    // Ignore
+  }
+  QR_TYPES.forEach((t) => {
+    state.formValues[t.id] = { ...t.defaults };
+  });
+  state.activeType = 'url';
+  state.activeCategory = 'all';
+  state.style = { ...DEFAULT_STYLE };
+  renderTypeSelector();
+  renderContentForm();
+  renderCustomization();
+  updateQrPreview();
+  showToast('Rascunho local restaurado para o padrão.');
+}
+
+function persistSavedPresets() {
+  saveStorage(STORAGE_KEYS.presets, JSON.stringify(state.savedPresets));
+}
+
+function saveCustomPreset(nameInput, styleOverride = null) {
+  const cleanName =
+    String(nameInput || '').trim().slice(0, 40) ||
+    `Preset ${state.savedPresets.length + 1}`;
+  const cleanStyle = sanitizeStyle(styleOverride || state.style);
+  // Keep saved presets lightweight for localStorage
+  if (cleanStyle.logoDataUrl && !cleanStyle.logoPresetId && cleanStyle.logoDataUrl.length > 80000) {
+    cleanStyle.logoDataUrl = '';
+  }
+
+  const entry = {
+    id: `p-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: cleanName,
+    style: cleanStyle,
+    createdAt: Date.now(),
+  };
+
+  state.savedPresets = [entry, ...state.savedPresets].slice(0, 24);
+  persistSavedPresets();
+  renderCustomization();
+  return entry;
+}
+
+function deleteCustomPreset(presetId) {
+  state.savedPresets = state.savedPresets.filter((p) => p.id !== presetId);
+  persistSavedPresets();
+  renderCustomization();
+  showToast('Preset removido.');
+}
+
+function applyDecodedPreset(decoded, { saveAlso = false } = {}) {
+  state.style = sanitizeStyle(decoded.style);
+
+  if (decoded.type && decoded.values) {
+    state.activeType = decoded.type;
+    state.formValues[decoded.type] = {
+      ...getQrType(decoded.type).defaults,
+      ...decoded.values,
+    };
+  }
+
+  if (saveAlso) {
+    saveCustomPreset(decoded.name || 'Preset importado', state.style);
+  }
+
+  renderTypeSelector();
+  renderContentForm();
+  renderCustomization();
+  updateQrPreview();
+  persistWorkspaceNow();
+}
+
+function renderSavedPresetsMarkup() {
+  const items = state.savedPresets;
+  return `
+    <div class="saved-presets-wrap">
+      <div class="control-heading">
+        <span class="control-label">Meus presets (${items.length})</span>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <button type="button" class="link-btn" data-action="save-current-preset">+ Salvar atual</button>
+          <button type="button" class="link-btn" data-action="open-import-modal">Importar código</button>
+        </div>
+      </div>
+      ${
+        items.length
+          ? `
+        <div class="saved-presets-list">
+          ${items
+            .map((p) => {
+              const c1 = p.style?.fgColor || '#111111';
+              const c2 = p.style?.fgType !== 'solid' && p.style?.fgColor2 ? p.style.fgColor2 : p.style?.bgColor || '#FFFFFF';
+              return `
+                <div class="saved-preset-card">
+                  <button type="button" class="saved-preset-apply" data-apply-saved-preset="${p.id}" title="Aplicar preset ${escapeHtml(p.name)}">
+                    <span class="preset-dot" style="background: linear-gradient(135deg, ${c1} 50%, ${c2} 50%);"></span>
+                    <span>${escapeHtml(p.name)}</span>
+                  </button>
+                  <button type="button" class="mini-icon-btn" data-share-saved-preset="${p.id}" title="Compartilhar preset (Base64URL)" aria-label="Compartilhar ${escapeHtml(p.name)}">
+                    ${UI_ICONS.share}
+                  </button>
+                  <button type="button" class="mini-icon-btn is-danger" data-delete-saved-preset="${p.id}" title="Remover preset" aria-label="Remover ${escapeHtml(p.name)}">
+                    ${UI_ICONS.close}
+                  </button>
+                </div>
+              `;
+            })
+            .join('')}
+        </div>
+      `
+          : `<p class="panel-hint" style="margin:0;">Salve seu estilo favorito no navegador ou importe um código <code>QR1.</code> compartilhado.</p>`
+      }
+    </div>
+  `;
+}
+
+/* ============================================================================
+   Preset Share & Import Modal (Base64URL + Direct Hash Link)
+   ============================================================================ */
+function openPresetModal({ tab = 'share', name = '', sourceStyle = null } = {}) {
+  state.presetModal.tab = tab;
+  state.presetModal.name = name;
+  state.presetModal.sourceStyle = sourceStyle;
+  state.presetModal.includeContent = false;
+  if (tab === 'import') {
+    state.presetModal.importText = '';
+  }
+
+  renderPresetModal();
+  dom.presetModalBackdrop.classList.add('is-open');
+  dom.presetModalBackdrop.setAttribute('aria-hidden', 'false');
+}
+
+function closePresetModal() {
+  dom.presetModalBackdrop.classList.remove('is-open');
+  dom.presetModalBackdrop.setAttribute('aria-hidden', 'true');
+  state.presetModal.sourceStyle = null;
+}
+
+function renderPresetModal() {
+  const tab = state.presetModal.tab;
+  dom.presetTabShare.classList.toggle('is-active', tab === 'share');
+  dom.presetTabShare.setAttribute('aria-selected', String(tab === 'share'));
+  dom.presetTabImport.classList.toggle('is-active', tab === 'import');
+  dom.presetTabImport.setAttribute('aria-selected', String(tab === 'import'));
+
+  if (tab === 'share') {
+    renderPresetShareTab();
+  } else {
+    renderPresetImportTab();
+  }
+}
+
+function computeModalShareData() {
+  const styleToEncode = state.presetModal.sourceStyle || state.style;
+  const includeContent = !state.presetModal.sourceStyle && state.presetModal.includeContent;
+  const encoded = encodePresetCode({
+    style: styleToEncode,
+    name: state.presetModal.name,
+    type: includeContent ? state.activeType : '',
+    values: includeContent ? state.formValues[state.activeType] : null,
+  });
+  const shareUrl = buildShareUrl(encoded.code, window.location.href);
+  return { ...encoded, shareUrl };
+}
+
+function renderPresetShareTab() {
+  const data = computeModalShareData();
+  const isFromSaved = Boolean(state.presetModal.sourceStyle);
+
+  dom.presetModalBody.innerHTML = `
+    <div class="field">
+      <label class="field-label" for="share-preset-name">Nome do preset (opcional)</label>
+      <input
+        id="share-preset-name"
+        class="field-input"
+        type="text"
+        maxlength="40"
+        value="${escapeHtml(state.presetModal.name)}"
+        placeholder="Ex: Identidade da Marca, PIX Balcão..."
+      />
+    </div>
+
+    ${
+      !isFromSaved
+        ? `
+      <label class="check-row">
+        <input id="share-include-content" type="checkbox" ${state.presetModal.includeContent ? 'checked' : ''} />
+        <span>Incluir também o conteúdo atual (${escapeHtml(getQrType(state.activeType).shortLabel)})</span>
+      </label>
+    `
+        : ''
+    }
+
+    ${
+      data.omittedCustomLogo
+        ? `<p class="panel-hint" style="margin:0;">Nota: imagens de upload personalizado são omitidas do código curto para manter o link compacto. Ícones prontos são incluídos automaticamente.</p>`
+        : ''
+    }
+
+    <div class="field">
+      <label class="field-label" for="share-url-field">Link compartilhável</label>
+      <div class="code-copy-row">
+        <input id="share-url-field" class="code-field" type="text" readonly value="${escapeHtml(data.shareUrl)}" />
+        <button type="button" class="btn btn-primary btn-sm" data-modal-action="copy-share-url">Copiar link</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="share-code-field">
+        <span>Código Base64URL</span>
+        <span id="share-code-len" class="control-value">${data.code.length} chars</span>
+      </label>
+      <div class="code-copy-row">
+        <input id="share-code-field" class="code-field" type="text" readonly value="${escapeHtml(data.code)}" />
+        <button type="button" class="btn btn-secondary btn-sm" data-modal-action="copy-share-code">Copiar código</button>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      ${
+        !isFromSaved
+          ? `<button type="button" class="btn btn-secondary btn-sm" data-modal-action="save-from-modal">Salvar em Meus Presets</button>`
+          : ''
+      }
+      <button type="button" class="btn btn-primary btn-sm" data-modal-action="close-modal">Concluir</button>
+    </div>
+  `;
+}
+
+function updateShareTabOutputsInPlace() {
+  const data = computeModalShareData();
+  const urlField = document.getElementById('share-url-field');
+  const codeField = document.getElementById('share-code-field');
+  const lenEl = document.getElementById('share-code-len');
+  if (urlField) urlField.value = data.shareUrl;
+  if (codeField) codeField.value = data.code;
+  if (lenEl) lenEl.textContent = `${data.code.length} chars`;
+}
+
+function renderImportPreviewMarkup(rawText) {
+  const trimmed = String(rawText || '').trim();
+  if (!trimmed) return '';
+
+  try {
+    const decoded = decodePresetCode(trimmed);
+    const thumbSvg = renderQrSvg('https://github.com', {
+      ...decoded.style,
+      frameStyle: 'none',
+      margin: 2,
+    }).svg;
+    const dotLabel = DOT_STYLES.find((d) => d.id === decoded.style.dotStyle)?.label || decoded.style.dotStyle;
+    const extra = decoded.type
+      ? `Inclui conteúdo (${getQrType(decoded.type).shortLabel})`
+      : 'Somente estilo visual';
+
+    return `
+      <div class="import-preview">
+        <span class="import-preview-thumb">${thumbSvg}</span>
+        <div class="import-preview-meta">
+          <strong>${escapeHtml(decoded.name || 'Preset sem nome')}</strong>
+          <span>Módulos: ${escapeHtml(dotLabel)} · ECC ${decoded.style.ecc} · ${escapeHtml(extra)}</span>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    return `<div class="import-preview is-error">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderPresetImportTab() {
+  const raw = state.presetModal.importText;
+  let valid = false;
+  if (raw.trim()) {
+    try {
+      decodePresetCode(raw);
+      valid = true;
+    } catch {
+      valid = false;
+    }
+  }
+
+  dom.presetModalBody.innerHTML = `
+    <div class="field">
+      <label class="field-label" for="import-code-input">Cole o código Base64URL (<code>QR1...</code>) ou o link compartilhado</label>
+      <textarea
+        id="import-code-input"
+        class="code-textarea"
+        placeholder="QR1.eyJzIjp7... ou https://...#preset=QR1...."
+      >${escapeHtml(raw)}</textarea>
+    </div>
+
+    <div id="import-preview-slot">${renderImportPreviewMarkup(raw)}</div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary btn-sm" id="import-apply-save-btn" data-modal-action="import-apply-save" ${!valid ? 'disabled' : ''}>
+        Aplicar e salvar
+      </button>
+      <button type="button" class="btn btn-primary btn-sm" id="import-apply-btn" data-modal-action="import-apply" ${!valid ? 'disabled' : ''}>
+        Aplicar agora
+      </button>
+    </div>
+  `;
+}
+
+function tryLoadPresetFromUrl() {
+  const token = extractPresetToken(window.location.href);
+  if (!token) return false;
+
+  try {
+    const decoded = decodePresetCode(token);
+    applyDecodedPreset(decoded, { saveAlso: false });
+    const label = decoded.name ? ` "${decoded.name}"` : '';
+    showToast(`Preset compartilhado${label} carregado!`);
+    return true;
+  } catch {
+    showToast('Link de preset inválido ou incompleto.');
+    return false;
+  }
 }
 
 /* ============================================================================
@@ -541,6 +963,7 @@ function renderSimpleCustomization() {
         `
         ).join('')}
       </div>
+      ${renderSavedPresetsMarkup()}
     </div>
 
     <div class="control-group">
@@ -623,6 +1046,7 @@ function renderPatternTab() {
         `
         ).join('')}
       </div>
+      ${renderSavedPresetsMarkup()}
     </div>
 
     <div class="control-group">
@@ -1103,11 +1527,14 @@ function renderTechnicalTab() {
 
     <div class="control-group">
       <div class="control-heading">
-        <span class="control-label">Backup de estilo (JSON)</span>
+        <span class="control-label">Presets, Base64URL &amp; Armazenamento Local</span>
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button type="button" class="btn btn-secondary btn-sm" data-action="export-config">Exportar configuração</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="open-share-modal">Compartilhar Base64URL</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="open-import-modal">Importar código</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="export-config">Exportar JSON</button>
         <button type="button" class="btn btn-secondary btn-sm" data-action="import-config">Importar JSON</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="clear-workspace">Limpar rascunho salvo</button>
       </div>
     </div>
   `;
@@ -1122,6 +1549,7 @@ function buildCurrentPayload() {
 }
 
 function updateQrPreview() {
+  scheduleWorkspaceSave();
   const payload = buildCurrentPayload();
   dom.qrStage.classList.toggle('is-transparent', state.style.bgType === 'transparent');
 
@@ -1565,6 +1993,7 @@ function bindEvents() {
     if (!tab) return;
     state.activeStudioTab = tab.dataset.tab;
     renderCustomization();
+    scheduleWorkspaceSave();
   });
 
   // Customization actions & controls
@@ -1604,11 +2033,48 @@ function bindEvents() {
       return;
     }
 
+    const applySavedBtn = e.target.closest('[data-apply-saved-preset]');
+    if (applySavedBtn) {
+      const preset = state.savedPresets.find((p) => p.id === applySavedBtn.dataset.applySavedPreset);
+      if (preset) {
+        state.style = sanitizeStyle(preset.style);
+        renderCustomization();
+        updateQrPreview();
+        showToast(`Preset "${preset.name}" aplicado.`);
+      }
+      return;
+    }
+
+    const shareSavedBtn = e.target.closest('[data-share-saved-preset]');
+    if (shareSavedBtn) {
+      const preset = state.savedPresets.find((p) => p.id === shareSavedBtn.dataset.shareSavedPreset);
+      if (preset) {
+        openPresetModal({ tab: 'share', name: preset.name, sourceStyle: preset.style });
+      }
+      return;
+    }
+
+    const deleteSavedBtn = e.target.closest('[data-delete-saved-preset]');
+    if (deleteSavedBtn) {
+      deleteCustomPreset(deleteSavedBtn.dataset.deleteSavedPreset);
+      return;
+    }
+
     const actionBtn = e.target.closest('[data-action]');
     if (actionBtn) {
       const action = actionBtn.dataset.action;
       if (action === 'go-complete') {
         setMode('complete');
+      } else if (action === 'save-current-preset') {
+        openPresetModal({ tab: 'share', name: '' });
+        setTimeout(() => document.getElementById('share-preset-name')?.focus(), 50);
+      } else if (action === 'open-share-modal') {
+        openPresetModal({ tab: 'share', name: '' });
+      } else if (action === 'open-import-modal') {
+        openPresetModal({ tab: 'import' });
+        setTimeout(() => document.getElementById('import-code-input')?.focus(), 50);
+      } else if (action === 'clear-workspace') {
+        clearSavedWorkspace();
       } else if (action === 'remove-logo') {
         applyLogoDataUrl('', '');
         showToast('Logo removido.');
@@ -1720,6 +2186,101 @@ function bindEvents() {
     showToast('Correção de erro alterada para H (30%).');
   });
 
+  // Share/Import Preset Modal triggers & interactions
+  dom.sharePresetBtn.addEventListener('click', () => openPresetModal({ tab: 'share' }));
+  dom.presetModalCloseBtn.addEventListener('click', closePresetModal);
+  dom.presetModalBackdrop.addEventListener('click', (e) => {
+    if (e.target === dom.presetModalBackdrop) closePresetModal();
+  });
+  dom.presetTabShare.addEventListener('click', () => {
+    state.presetModal.tab = 'share';
+    renderPresetModal();
+  });
+  dom.presetTabImport.addEventListener('click', () => {
+    state.presetModal.tab = 'import';
+    renderPresetModal();
+    setTimeout(() => document.getElementById('import-code-input')?.focus(), 40);
+  });
+
+  dom.presetModalBody.addEventListener('input', (e) => {
+    const el = e.target;
+    if (el.id === 'share-preset-name') {
+      state.presetModal.name = el.value;
+      updateShareTabOutputsInPlace();
+    } else if (el.id === 'import-code-input') {
+      state.presetModal.importText = el.value;
+      const previewSlot = document.getElementById('import-preview-slot');
+      if (previewSlot) previewSlot.innerHTML = renderImportPreviewMarkup(el.value);
+      let valid = false;
+      if (el.value.trim()) {
+        try {
+          decodePresetCode(el.value);
+          valid = true;
+        } catch {
+          valid = false;
+        }
+      }
+      const applyBtn = document.getElementById('import-apply-btn');
+      const saveBtn = document.getElementById('import-apply-save-btn');
+      if (applyBtn) applyBtn.disabled = !valid;
+      if (saveBtn) saveBtn.disabled = !valid;
+    }
+  });
+
+  dom.presetModalBody.addEventListener('change', (e) => {
+    if (e.target.id === 'share-include-content') {
+      state.presetModal.includeContent = e.target.checked;
+      updateShareTabOutputsInPlace();
+    }
+  });
+
+  const copyFieldText = async (inputId, successMsg) => {
+    const field = document.getElementById(inputId);
+    if (!field) return;
+    const text = field.value;
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        field.select();
+        document.execCommand('copy');
+      }
+      showToast(successMsg);
+    } catch {
+      field.select();
+      document.execCommand('copy');
+      showToast(successMsg);
+    }
+  };
+
+  dom.presetModalBody.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-modal-action]');
+    if (!btn) return;
+    const action = btn.dataset.modalAction;
+
+    if (action === 'copy-share-url') {
+      copyFieldText('share-url-field', 'Link compartilhável copiado!');
+    } else if (action === 'copy-share-code') {
+      copyFieldText('share-code-field', 'Código Base64URL copiado!');
+    } else if (action === 'save-from-modal') {
+      const saved = saveCustomPreset(state.presetModal.name, state.style);
+      showToast(`Preset "${saved.name}" salvo localmente!`);
+      closePresetModal();
+    } else if (action === 'close-modal') {
+      closePresetModal();
+    } else if (action === 'import-apply' || action === 'import-apply-save') {
+      try {
+        const decoded = decodePresetCode(state.presetModal.importText);
+        const saveAlso = action === 'import-apply-save';
+        applyDecodedPreset(decoded, { saveAlso });
+        closePresetModal();
+        showToast(saveAlso ? 'Preset aplicado e salvo em Meus Presets!' : 'Preset aplicado com sucesso!');
+      } catch (err) {
+        showToast(err.message || 'Código inválido.');
+      }
+    }
+  });
+
   // Randomize & Reset
   dom.randomizeStyleBtn.addEventListener('click', randomizeStyle);
   dom.resetStyleBtn.addEventListener('click', resetStyle);
@@ -1739,7 +2300,7 @@ function bindEvents() {
       try {
         const parsed = JSON.parse(String(reader.result || '{}'));
         if (parsed.style && typeof parsed.style === 'object') {
-          state.style = { ...DEFAULT_STYLE, ...parsed.style };
+          state.style = sanitizeStyle(parsed.style);
           renderCustomization();
           updateQrPreview();
           showToast('Estilo importado com sucesso!');
@@ -1767,6 +2328,11 @@ function bindEvents() {
         }
       }
     }
+  });
+
+  // React to live #preset= hash changes
+  window.addEventListener('hashchange', () => {
+    tryLoadPresetFromUrl();
   });
 
   // Export & Utility buttons
@@ -1805,7 +2371,7 @@ function bindEvents() {
     if (!entry) return;
     state.activeType = entry.type;
     state.formValues[entry.type] = { ...getQrType(entry.type).defaults, ...entry.values };
-    state.style = { ...DEFAULT_STYLE, ...entry.style };
+    state.style = sanitizeStyle(entry.style);
     renderTypeSelector();
     renderContentForm();
     renderCustomization();
@@ -1815,8 +2381,9 @@ function bindEvents() {
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && dom.historyBackdrop.classList.contains('is-open')) {
-      closeHistoryDrawer();
+    if (e.key === 'Escape') {
+      if (dom.presetModalBackdrop.classList.contains('is-open')) closePresetModal();
+      if (dom.historyBackdrop.classList.contains('is-open')) closeHistoryDrawer();
     }
   });
 
@@ -1835,6 +2402,8 @@ function bindEvents() {
 
 function hydrateStaticIcons() {
   dom.historyIcon.innerHTML = UI_ICONS.history;
+  dom.shareIcon.innerHTML = UI_ICONS.share;
+  dom.presetCloseIcon.innerHTML = UI_ICONS.close;
   dom.shuffleIcon.innerHTML = UI_ICONS.shuffle;
   dom.resetIcon.innerHTML = UI_ICONS.reset;
   dom.dlIcon.innerHTML = UI_ICONS.download;
@@ -1844,6 +2413,10 @@ function hydrateStaticIcons() {
 }
 
 function init() {
+  // 1. Restore saved workspace from localStorage first
+  restoreWorkspaceFromStorage();
+
+  // 2. Apply optional URL query params (?mode=, ?type=, ?theme=)
   const params = new URLSearchParams(window.location.search);
   const urlMode = params.get('mode');
   if (urlMode === 'simple' || urlMode === 'complete') {
@@ -1865,6 +2438,9 @@ function init() {
   renderContentForm();
   updateQrPreview();
   bindEvents();
+
+  // 3. If URL contains a shared #preset=QR1... or ?preset=QR1..., load and apply it
+  tryLoadPresetFromUrl();
 }
 
 init();

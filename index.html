@@ -128,6 +128,16 @@
             </div>
             <div class="panel-actions">
               <button
+                id="share-preset-btn"
+                class="icon-btn"
+                type="button"
+                title="Compartilhar ou importar preset (Base64URL / Link)"
+                aria-label="Compartilhar ou importar preset"
+              >
+                <span id="share-icon"></span>
+                <span class="btn-label">Presets</span>
+              </button>
+              <button
                 id="randomize-style-btn"
                 class="icon-btn"
                 type="button"
@@ -221,7 +231,7 @@
     </main>
 
     <footer class="site-footer">
-      <span>100% local no seu navegador — seus dados nunca saem do dispositivo.</span>
+      <span id="autosave-status">Salvo automaticamente neste navegador · 100% local.</span>
       <span>QR Studio · Compatível com GitHub Pages</span>
     </footer>
 
@@ -237,6 +247,32 @@
       <button id="mobile-download-btn" class="btn btn-primary btn-sm" type="button">
         Baixar PNG
       </button>
+    </div>
+
+    <!-- Preset Share & Import Modal -->
+    <div id="preset-modal-backdrop" class="modal-backdrop" aria-hidden="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="preset-modal-title">
+        <div class="modal-head">
+          <div>
+            <h2 id="preset-modal-title">Compartilhar &amp; Importar Preset</h2>
+            <p class="panel-hint">Codificação compacta Base64URL (<code>QR1.</code>) compatível com links diretos.</p>
+          </div>
+          <button id="preset-modal-close-btn" class="icon-btn" type="button" aria-label="Fechar janela">
+            <span id="preset-close-icon"></span>
+          </button>
+        </div>
+
+        <div class="modal-tabs" role="tablist">
+          <button id="preset-tab-share" class="modal-tab is-active" type="button" role="tab" data-preset-tab="share" aria-selected="true">
+            Compartilhar
+          </button>
+          <button id="preset-tab-import" class="modal-tab" type="button" role="tab" data-preset-tab="import" aria-selected="false">
+            Importar código / link
+          </button>
+        </div>
+
+        <div id="preset-modal-body" class="modal-body"></div>
+      </div>
     </div>
 
     <!-- History Drawer -->

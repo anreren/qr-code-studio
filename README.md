@@ -19,10 +19,12 @@ Webapp minimalista de geração e personalização avançada de QR Codes, 100% e
   - **Moldura**: 6 estilos de moldura com texto CTA personalizável, cores e arredondamento.
   - **Técnico**: correção de erro (`L`, `M`, `Q`, `H`), *quiet zone*, versão mínima, resolução de exportação até `4096px`, inspetor de payload bruto e exportar/importar JSON.
 
-### Exportação & Usabilidade
+### Exportação, Persistência & Compartilhamento de Presets
 - Verificação automática de contraste e legibilidade em tempo real.
 - Exportação em **PNG**, **SVG vetorial**, **WebP**, **JPEG**, cópia direta para área de transferência e impressão limpa.
-- Histórico local no navegador (`localStorage`), tema claro/escuro e interface otimizada para desktop e mobile (com barra flutuante de acesso rápido no celular).
+- **Persistência automática em `localStorage`**: tipo ativo, campos preenchidos, customizações, presets salvos, histórico, modo e tema são preservados localmente no navegador.
+- **Compartilhamento de presets em Base64URL (`QR1.`)**: codificação compacta por delta com suporte a links diretos (`#preset=QR1....`), compartilhamento opcional do conteúdo do QR e importação com pré-visualização instantânea.
+- Tema claro/escuro e interface otimizada para desktop e mobile (com barra flutuante de acesso rápido no celular).
 
 ## Como publicar no GitHub Pages
 
