@@ -24,7 +24,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=3" />
   </head>
   <body>
     <header class="topbar">
@@ -250,7 +250,7 @@
     </div>
 
     <!-- Preset Share & Import Modal -->
-    <div id="preset-modal-backdrop" class="modal-backdrop" aria-hidden="true">
+    <div id="preset-modal-backdrop" class="modal-backdrop" aria-hidden="true" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="preset-modal-title">
         <div class="modal-head">
           <div>
@@ -276,7 +276,7 @@
     </div>
 
     <!-- History Drawer -->
-    <div id="history-backdrop" class="drawer-backdrop" aria-hidden="true">
+    <div id="history-backdrop" class="drawer-backdrop" aria-hidden="true" hidden>
       <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="history-drawer-title">
         <div class="drawer-head">
           <h2 id="history-drawer-title">Histórico recente</h2>
@@ -303,6 +303,6 @@
     <!-- Toast -->
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-    <script type="module" src="./js/app.js"></script>
+    <script type="module" src="./js/app.js?v=3"></script>
   </body>
 </html>

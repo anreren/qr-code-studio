@@ -447,13 +447,21 @@ function openPresetModal({ tab = 'share', name = '', sourceStyle = null } = {}) 
   }
 
   renderPresetModal();
-  dom.presetModalBackdrop.classList.add('is-open');
+  dom.presetModalBackdrop.hidden = false;
   dom.presetModalBackdrop.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('overlay-open');
+  requestAnimationFrame(() => {
+    dom.presetModalBackdrop.classList.add('is-open');
+  });
 }
 
 function closePresetModal() {
   dom.presetModalBackdrop.classList.remove('is-open');
   dom.presetModalBackdrop.setAttribute('aria-hidden', 'true');
+  dom.presetModalBackdrop.hidden = true;
+  if (dom.historyBackdrop.hidden) {
+    document.body.classList.remove('overlay-open');
+  }
   state.presetModal.sourceStyle = null;
 }
 
@@ -1854,13 +1862,21 @@ function renderHistoryDrawer() {
 
 function openHistoryDrawer() {
   renderHistoryDrawer();
-  dom.historyBackdrop.classList.add('is-open');
+  dom.historyBackdrop.hidden = false;
   dom.historyBackdrop.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('overlay-open');
+  requestAnimationFrame(() => {
+    dom.historyBackdrop.classList.add('is-open');
+  });
 }
 
 function closeHistoryDrawer() {
   dom.historyBackdrop.classList.remove('is-open');
   dom.historyBackdrop.setAttribute('aria-hidden', 'true');
+  dom.historyBackdrop.hidden = true;
+  if (dom.presetModalBackdrop.hidden) {
+    document.body.classList.remove('overlay-open');
+  }
 }
 
 /* ============================================================================
